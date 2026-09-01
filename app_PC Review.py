@@ -383,30 +383,16 @@ def main():
     key = _resolve_key()
     products = [s.strip() for s in args.products.split(',') if s.strip()]
 
-    # 키 없고 --demo 도 없으면: 인터랙티브 입력 폴백 (CLI 모드에서도 친절하게)
-    if not args.demo and not key:
-        print('[app.py] 키 또는 시크릿이 없습니다. 아래에서 입력하세요 (Ctrl+C로 종료).', file=sys.stderr)
-        try:
-            import getpass
-            key = getpass.getpass('data.go.kr 인증키: ').strip()
-            if not key:
-                WARN('키 입력이 비어있습니다. --demo 로 재시도하거나 키를 다시 입력하세요.')
-                sys.exit(2)
-        except (KeyboardInterrupt, EOFError):
-            WARN('키 입력 취소 — --demo 로 재시도하세요.'); sys.exit(2)
+    # 키 없고 --demo 도 없으면: 데모로 자동 폴백 (TTY 차단 호출 안 함)
+    demo_fallback = args.demo
+    if not demo_fallback and not key:
+        WARN('키가 없습니다. --demo 모드로 자동 전환합니다.')
+        demo_fallback = True
 
-    if not products and not args.demo:
-        # CLI 모드 폴백: 제품도 인터랙티브 입력
-        try:
-            raw = input('제품명 (쉼표 구분, 엔터=리리카 75mg 데모): ').strip()
-            products = [s.strip() for s in raw.split(',') if s.strip()] or ['리리카 캡슐 75mg']
-        except (KeyboardInterrupt, EOFError):
-            WARN('제품명 입력 취소.'); sys.exit(2)
+    if not products:
+        products = ['리리카 캡슐 75mg', '디카맥스D 500', '타이레놀 500mg']
 
-    if not products and args.demo:
-        products = ['리리카 캡슐 75mg']  # 데모 기본 1건
-
-    run(products, key, args.ref, args.demo)
+    run(products, key, args.ref, demo_fallback)
 
 if __name__ == '__main__':
     main()
