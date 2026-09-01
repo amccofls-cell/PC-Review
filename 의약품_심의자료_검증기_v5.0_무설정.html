@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>의약품 심의자료 검증기 v5.0 — 무설정 단일 HTML</title>
+<style>
+:root{
+  --bg:#0f1419;--panel:#1a1f2e;--line:#2a2f3e;--txt:#e6e6e6;--muted:#9aa3b2;
+  --g:#4ade80;--r:#ef4444;--y:#eab308;--o:#fb923c;--w:#9ca3af;--b:#60a5fa;
+  --acc:#a78bfa;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--txt);font-family:'Malgun Gothic',sans-serif;font-size:14px;line-height:1.5}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 22px 80px}
+h1{font-size:18px;margin-bottom:10px;text-align:center;color:var(--acc)}
+.tag{display:inline-block;background:#1e293b;color:#94a3b8;font-size:11px;padding:2px 8px;border-radius:99px;margin-left:6px}
+.sub{font-size:12px;color:var(--muted);text-align:center;margin-bottom:14px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:12px}
+.box h2{font-size:13px;color:var(--b);margin-bottom:8px;font-weight:600}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.row label{min-width:80px;font-size:12px;color:var(--muted)}
+.row input,.row textarea,.row select{background:#0b0f17;border:1px solid var(--line);color:var(--txt);
+  padding:6px 10px;border-radius:5px;font-family:inherit;font-size:13px;width:220px}
+.row textarea{width:100%;min-height:120px;font-family:'Consolas',monospace;font-size:12px}
+.row input[type=date]{width:140px}
+.btn{background:var(--acc);color:#0e0e1a;border:none;padding:8px 14px;border-radius:6px;
+  cursor:pointer;font-size:13px;font-weight:600;transition:.15s}
+.btn:hover{transform:translateY(-1px);filter:brightness(1.1)}
+.btn.sec{background:#334155;color:#fff}
+.btn.danger{background:var(--r);color:#fff}
+.btn.warn{background:var(--o);color:#000}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.kbox{background:linear-gradient(135deg,#422006,#713f12);border:1px solid #a16207;border-radius:6px;padding:10px 14px;display:flex;gap:10px;align-items:center;margin-bottom:12px;font-size:12px}
+.kbox .lbl{color:#fde68a;font-weight:600}
+.tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin-bottom:10px}
+.tab{padding:8px 14px;cursor:pointer;border-radius:5px 5px 0 0;font-size:12px;color:var(--muted)}
+.tab.active{background:var(--b);color:#000;font-weight:600}
+.pane{display:none;background:var(--panel);border:1px solid var(--line);border-top:none;border-radius:0 0 8px 8px;padding:14px}
+.pane.active{display:block}
+table.results{width:100%;border-collapse:collapse;font-size:12px}
+table.results th,table.results td{padding:6px 8px;border:1px solid var(--line);text-align:left;vertical-align:top}
+table.results th{background:#1e293b;color:#b;position:sticky;top:0;font-weight:600;color:#cbd5e1}
+table.results td.act{white-space:nowrap;width:1%}
+tr.g td.status{background:rgba(74,222,128,.15);color:var(--g);font-weight:700}
+tr.r td.status{background:rgba(239,68,68,.15);color:var(--r);font-weight:700}
+tr.y td.status{background:rgba(234,179,8,.15);color:var(--y);font-weight:700}
+tr.o td.status{background:rgba(251,146,60,.15);color:var(--o);font-weight:700}
+tr.w td.status{background:rgba(156,163,175,.15);color:var(--w);font-weight:700;opacity:.7}
+.toast{position:fixed;bottom:30px;right:30px;background:var(--acc);color:#000;padding:10px 18px;border-radius:6px;font-weight:600;font-size:13px;display:none;z-index:999}
+.toast.err{background:var(--r);color:#fff}
+.toast.warn{background:var(--o);color:#000}
+.pill{display:inline-block;padding:2px 7px;border-radius:99px;font-size:10px;margin-right:4px}
+.pill.b{background:#1e40af;color:#fff}
+.pill.o{background:#7c2d12;color:#fed7aa}
+.copy{background:#4c1d95;color:#ddd6fe;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px}
+.copy:hover{background:#5b21b6}
+.dropzone{border:2px dashed var(--line);border-radius:8px;padding:24px;text-align:center;background:#0b0f17;cursor:pointer;font-size:12px;color:var(--muted)}
+.dropzone.hover{border-color:var(--acc);background:#1a1f2e;color:var(--acc)}
+.dropzone.loaded{color:var(--g);border-style:solid}
+.foot{font-size:11px;color:#64748b;text-align:center;margin-top:24px}
+a{color:var(--b);text-decoration:none}
+a:hover{text-decoration:underline}
+.warn-banner{background:#7c2d12;border-left:4px solid var(--o);padding:10px 14px;border-radius:4px;margin-bottom:12px;font-size:12px;color:#fed7aa}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>💊 의약품 심의자료 검증기 v5.0 <span class="tag">무설정 · 클릭만 · 단일 HTML</span></h1>
+<div class="sub">식약처·심평원 OpenAPI 직접 호출 · 로컬 PC에 파이썬 설치 <b>필요 없음</b></div>
+
+<div class="kbox">
+  <span class="lbl">🔑</span>
+  <span style="flex:1">
+    <span id="keyStatus">키 미등록</span> ·
+    <a href="https://www.data.go.kr/" target="_blank" style="color:#fde68a">data.go.kr 인증키 발급 →</a>
+  </span>
+  <button class="btn warn" onclick="openKeyModal()">🔑 키 등록/변경</button>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-pane="ta" onclick="switchTab('ta')">① 검증하기</div>
+  <div class="tab" data-pane="help" onclick="switchTab('help')">② GitHub 배포 가이드</div>
+  <div class="tab" data-pane="rules" onclick="switchTab('rules')">③ 비교 규칙</div>
+</div>
+
+<div class="pane active" id="pane-ta">
+  <div class="row" style="gap:14px;align-items:stretch">
+    <div class="box" style="flex:1;margin:0">
+      <h2>① 조회할 제품</h2>
+      <div class="row"><label>제품명</label><input id="q" placeholder="예: 리리카 캡슐 75mg" style="width:280px"></div>
+      <div class="row"><label>검토 기준일</label><input type="date" id="refDate"></div>
+      <button class="btn" id="btnRun" onclick="runVerify()">🚀 즉시 검증</button>
+      <button class="btn sec" onclick="clearAll()">초기화</button>
+    </div>
+    <div class="box" style="flex:1;margin:0">
+      <h2>② 비교표(선택)</h2>
+      <textarea id="cmp" placeholder="한 줄 = 한 항목, 빈 줄 = 제품 구분&#10;&#10;예시:&#10;의약품명|리리카 CR 서방정 330밀리그램&#10;성분명|프레가발린&#10;제조판매사|비아트리스코리아(주)&#10;함량|330mg&#10;제형|서방정&#10;적응증|말초성 신경병증 통증&#10;용법용량|초기 1일 165mg, 최대 660mg, 1일 2회&#10;보관방법|실온(1~30°C) 기밀용기&#10;약가|1,399원"></textarea>
+    </div>
+  </div>
+
+  <div class="box" id="resultBox" style="display:none">
+    <div class="row" style="justify-content:space-between">
+      <h2>③ 검증 결과</h2>
+      <div>
+        <label style="font-size:11px;color:var(--muted)"><input type="checkbox" id="onlyRed" onchange="renderTable()"> 🔴 수정 필요만</label>
+        <button class="btn sec" onclick="copyOrangeAll()">🤖 🟠 행 일괄 복사</button>
+        <button class="btn" onclick="downloadCSV()">⬇ 결과 CSV</button>
+      </div>
+    </div>
+    <div id="summary" style="margin-bottom:8px;font-size:11px;color:var(--muted)"></div>
+    <div style="overflow:auto;max-height:520px;border:1px solid var(--line);border-radius:6px">
+      <table class="results" id="resultTable">
+        <thead><tr><th>#</th><th>제품명</th><th>필드</th><th>비교표 기재</th><th>원문(API)</th><th>판정</th><th>근거</th><th>액션</th></tr></thead>
+        <tbody id="resultBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="pane" id="pane-help">
+  <div class="warn-banner">⚠ 이 HTML은 <b>사용자 본인 브라우저</b>에서 식약처·심평원 API를 직접 호출합니다. 본인 인증키를 브라우저에 저장(localStorage)하며 외부 서버로 전송하지 않습니다.</div>
+
+  <div class="box">
+    <h2>GitHub Pages 1회 배포 (영구 호스팅)</h2>
+    <ol style="padding-left:20px;line-height:1.8;font-size:13px">
+      <li><a href="https://github.com/new" target="_blank">github.com/new</a> 접속 → 로그인
+        <ul style="margin-left:14px;margin-top:4px">
+          <li>Repository name: <code>drug-verify</code> (아무 이름 OK)</li>
+          <li>☑ <b>Add a README file</b> 체크</li>
+          <li>→ Create repository 클릭</li>
+        </ul>
+      </li>
+      <li>리포 페이지에서 <b>Add file → Upload files</b> 클릭<br>
+        → 방금 받은 <code>의약품_심의자료_검증기_v5.0_무설정.html</code> 끌어다 놓기
+        → 하단 <b>Commit changes</b> 녹색 버튼 클릭</li>
+      <li>리포 상단 <b>Settings</b> 탭 → 왼쪽 <b>Pages</b> 메뉴
+        <ul style="margin-left:14px;margin-top:4px">
+          <li>Source: <b>Deploy from a branch</b></li>
+          <li>Branch: <b>main</b>, Folder: <b>/ (root)</b> → Save</li>
+        </ul>
+      </li>
+      <li>1분 기다리면 <code>https://&lt;내계정&gt;.github.io/drug-verify/의약품_심의자료_검증기_v5.0_무설정.html</code> 가 열림 → 북마크</li>
+    </ol>
+    <p style="margin-top:8px;font-size:12px;color:var(--muted)">이후엔 그 주소만 열어 쓰면 됩니다. 매번 다운로드할 필요 없음.</p>
+  </div>
+
+  <div class="box">
+    <h2>키 발급 (1회만)</h2>
+    <ol style="padding-left:20px;line-height:1.8;font-size:13px">
+      <li><a href="https://www.data.go.kr/" target="_blank">data.go.kr</a> 가입 → 마이페이지 → <b>인증키 발급</b></li>
+      <li>다음 두 가지 모두 발급 (1개씩):
+        <ul style="margin-left:14px;margin-top:4px">
+          <li>「의약품 허가정보 서비스」</li>
+          <li>「건강보험심사평가원 약가기준정보조회서비스」</li>
+        </ul>
+      </li>
+      <li>HTML 상단 <b>[🔑 키 등록]</b> 클릭 → 두 키를 <code>mfds키,hira키</code> 형태로 붙여넣기 → 저장</li>
+      <li>키는 본인 브라우저 localStorage에만 저장. 외부 전송 ❌</li>
+      <li>공유 PC 사용 시 <b>[🔄 키 회전]</b> 으로 새 키로 교체</li>
+    </ol>
+  </div>
+</div>
+
+<div class="pane" id="pane-rules">
+  <div class="box">
+    <h2>4가지 비교 규칙 — 자동 판정 색상</h2>
+    <table class="results">
+      <tr><th>규칙</th><th>필드</th><th>로직</th><th>판정</th></tr>
+      <tr><td>완전일치</td><td>의약품명·제조판매사·보관</td><td>노이즈(주, 「」, 컴마) 제거 후 동일</td><td>🟢 / 🔴</td></tr>
+      <tr><td>정규화일치</td><td>함량·제형·성분명</td><td>단위 사전 적용, 편집거리 ≤2</td><td>🟢 / 🟡 / 🔴</td></tr>
+      <tr><td>수치·단위 0%</td><td>약가</td><td>정규화 후 1글자 차이도 🔴</td><td>🟢 / 🔴 / ⚪</td></tr>
+      <tr><td>의미 단위</td><td>적응증·용법·소아·금기</td><td>자동 판정 안 함 → 🤖 LLM 복사</td><td>🟠 고정</td></tr>
+    </table>
+  </div>
+</div>
+
+<div id="keyModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);align-items:center;justify-content:center;z-index:100">
+  <div class="box" style="max-width:520px;background:var(--panel);border:1px solid var(--acc)">
+    <h2>🔑 data.go.kr 인증키</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">식약처/심평원 키를 쉼표(,)로 구분해 붙여넣으세요. 둘 다 등록하면 콤마 연결 한 줄로도 OK.</p>
+    <textarea id="keyInput" placeholder="예: abc123mfds키,xyz789hira키&#10;또는 한 줄로: 단일키 (mfds와 동일 키 사용 시)" style="width:100%;min-height:90px;font-family:Consolas,monospace"></textarea>
+    <div class="row" style="justify-content:flex-end;margin-top:10px">
+      <button class="btn sec" onclick="clearKey()">🗑 삭제</button>
+      <button class="btn sec" onclick="closeKeyModal()">취소</button>
+      <button class="btn" onclick="saveKey()">💾 저장</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="foot">v5.0 · 외부 호출 외 어떤 라이브러리도 사용 안 함 · 오프라인에서도 (키 등록 후) 동작</div>
+</div>
+
+<script>
+const KEYS=['DATA_GO_KR_KEY','MFDS_SERVICE_KEY','HIRA_SERVICE_KEY'];
+const MFDS_LIST='https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07';
+const HIRA_LIST='https://apis.data.go.kr/B551182/dgamtCrtrInfoService1.2/getDgamtList';
+let lastKey=null, lastResults=[], lastProducts=[];
+
+function getKey(){
+  const v=localStorage.getItem('DRUG_KEY');
+  return v&&v.trim()?v.trim():null;
+}
+function updateKeyBadge(){
+  const k=getKey();
+  document.getElementById('keyStatus').textContent=k?'키 등록됨 · '+(k.length)+'자':'키 미등록 (상단 [🔑 키 등록] 클릭)';
+  lastKey=k;
+}
+function openKeyModal(){
+  document.getElementById('keyInput').value=getKey()||'';
+  document.getElementById('keyModal').style.display='flex';
+}
+function closeKeyModal(){document.getElementById('keyModal').style.display='none'}
+function saveKey(){
+  const v=document.getElementById('keyInput').value.trim();
+  if(!v){toast('키가 비어있습니다','warn');return}
+  localStorage.setItem('DRUG_KEY',v);
+  updateKeyBadge();closeKeyModal();
+  toast('키 저장 완료');
+}
+function clearKey(){
+  if(!confirm('저장된 키를 삭제할까요?'))return;
+  localStorage.removeItem('DRUG_KEY');updateKeyBadge();closeKeyModal();toast('키 삭제됨');
+}
+function switchTab(p){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.pane===p));
+  document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('active',p.id==='pane-'+p));
+}
+function toast(msg,kind){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.className='toast'+(kind?' '+kind:'');t.style.display='block';
+  clearTimeout(window._t);window._t=setTimeout(()=>t.style.display='none',2500);
+}
+function clearAll(){
+  document.getElementById('q').value='';
+  document.getElementById('cmp').value='';
+  document.getElementById('resultBox').style.display='none';
+  lastResults=[];lastProducts=[];
+}
+function today(){
+  const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function norm(s){
+  if(s==null)return '';
+  return String(s).replace(/\s+/g,'').replace(/[「」『』\(\)\(\)\.,·_-]/g,'').toLowerCase();
+}
+function unitSyn(s){
+  if(!s)return s;
+  return String(s)
+    .replace(/밀리그램|밀리그람|mg/gi,'mg')
+    .replace(/마이크로그람|μg|μ\/g|mcg/gi,'mcg')
+    .replace(/그램|g\b/gi,'g')
+    .replace(/리터|ℓ|l/gi,'L')
+    .replace(/밀리리터|mL|ml/gi,'mL')
+    .replace(/℃|섭씨/gi,'°C')
+    .replace(/서방정|서방/gi,'서방정')
+    .replace(/캡슐|캅셀/gi,'캡슐')
+    .replace(/정제|^정$/gi,'정')
+    .replace(/vial|바이알/gi,'바이알')
+    .replace(/\s+/g,'')
+    .toLowerCase();
+}
+function num(s){if(s==null)return NaN;return parseFloat(String(s).replace(/[,원\s]/g,''))}
+const SEM=['적응증','용법용량','소아','금기'];
+const AUTO_FIELDS=['의약품명','성분명','제조판매사','함량','제형','보관','약가'];
+
+function parseCmp(txt){
+  const lines=txt.split('\n').map(l=>l.trim()).filter(l=>l);
+  const items=[],cur={};
+  for(const ln of lines){
+    if(/^[가-힣A-Za-z]/.test(ln)&&ln.includes('|')){
+      const idx=ln.indexOf('|');
+      const k=ln.slice(0,idx).trim(),v=ln.slice(idx+1).trim();
+      if(k==='의약품명'&&Object.keys(cur).length){items.push(cur);cur={}}
+      cur[k]=v;
+    } else if(Object.keys(cur).length){
+      cur['비고']=(cur['비고']||'')+' '+ln;
+    }
+  }
+  if(Object.keys(cur).length)items.push(cur);
+  return items;
+}
+
+function buildUrl(base,key,params){
+  const sp=new URLSearchParams(params);
+  sp.set('serviceKey',key);
+  return base+'?'+sp.toString();
+}
+
+async function fetchJSON(url){
+  const r=await fetch(url,{method:'GET',headers:{'Accept':'application/json'}});
+  const t=await r.text();
+  try{return JSON.parse(t)}catch(_){return {raw:t,status:r.status}}
+}
+
+async function callMFDS(productName,key){
+  const u=buildUrl(MFDS_LIST,key,{
+    itemName:productName,numOfRows:10,pageNo:1,type:'json'
+  });
+  return fetchJSON(u);
+}
+async function callHIRA(productName,key){
+  const u=buildUrl(HIRA_LIST,key,{
+    itmNm:productName,numOfRows:10,pageNo:1,type:'json'
+  });
+  return fetchJSON(u);
+}
+
+function pickRow(json,q){
+  const body=json?.body||json?.response?.body;
+  const items=body?.items||body?.item;
+  if(!items)return null;
+  const arr=Array.isArray(items)?items:[items];
+  const nq=norm(q);
+  let best=arr[0],bestScore=0;
+  for(const r of arr){
+    const s=norm(r.ITEM_NAME||r.itmNm||'').includes(nq)?2:1;
+    if(s>bestScore){best=r;bestScore=s}
+  }
+  return best;
+}
+
+function compare(table,api,field,ktype){
+  const tv=table?.[field],av=api?.[field];
+  if(!tv&&!av)return {status:'⚪',reason:'양쪽 모두 비어있음'};
+  if(!tv)return {status:'🔴',reason:'비교표에 기재 누락'};
+  if(!av)return {status:'⚪',reason:'API 원문 없음'};
+  if(ktype==='num'){
+    const tn=num(tv),an=num(av);
+    if(isNaN(tn))return {status:'🔴',reason:'수치 파싱 실패: '+tv};
+    if(isNaN(an))return {status:'🔴',reason:'원문 수치 파싱 실패: '+av};
+    if(tn===an)return {status:'🟢',reason:'수치 일치'};
+    return {status:'🔴',reason:'수치 불일치: '+tn+'≠'+an};
+  }
+  const tn=norm(unitSyn(tv)),an=norm(unitSyn(av));
+  if(tn===an)return {status:'🟢',reason:'완전 일치'};
+  if(SEM.includes(field))return {status:'🟠',reason:'의미 단위 — LLM 확인 필요'};
+  if(tn.includes(an)||an.includes(tn))return {status:'🟡',reason:'부분 일치(표현 차이)'};
+  return {status:'🔴',reason:'불일치: ['+tn+'] vs ['+an+']'};
+}
+
+function fmtField(f){return f}
+function fmtStatus(s){
+  const c={🟢:'g',🔴:'r',🟡:'y',🟠:'o',⚪:'w'}[s];
+  return c;
+}
+
+async function runVerify(){
+  const q=document.getElementById('q').value.trim();
+  if(!q){toast('제품명을 입력하세요','warn');return}
+  const key=getKey();
+  if(!key){openKeyModal();toast('키 등록이 필요합니다','warn');return}
+  const ref=document.getElementById('refDate').value||today();
+  const products=q.split(',').map(s=>s.trim()).filter(s=>s);
+  const cmp=document.getElementById('cmp').value.trim();
+  const cmpItems=cmp?parseCmp(cmp):[];
+  const btn=document.getElementById('btnRun');
+  btn.disabled=true;btn.textContent='⏳ 호출 중...';
+  try{
+    const allResults=[];
+    for(const p of products){
+      const m=await callMFDS(p,key);
+      const h=await callHIRA(p,key);
+      const mr=pickRow(m,p)||{};
+      const hr=pickRow(h,p)||{};
+      const api={의약품명:mr.ITEM_NAME||'',성분명:mr.INGR_NAME||'',제조판매사:mr.ENTP_NAME||'',함량:mr.ITEM_NAME?.match(/\d+\s*(mg|mcg|g|mL|L)/i)?.[0]||'',제형:mr.ITEM_NAME?.match(/(서방정|캡슐|정|주사|바이알|펜|현탁액|점안액)/)?.[0]||'',보관:mr.STORAGE_METHOD||'',약가:hr.mxCprc||''};
+      const tableFieldMap={
+        의약품명:api.의약품명,성분명:api.성분명,제조판매사:api.제조판매사,
+        함량:api.함량,제형:api.제형,보관:api.보관,약가:api.약가
+      };
+      for(const f of AUTO_FIELDS){
+        const tval=(cmpItems.find(c=>c['의약품명']===p)||{})[f]||'';
+        const j=compare({[f]:tval},{[f]:api[f]},f,f==='약가'?'num':'str');
+        allResults.push({product:p,field:f,table:tval,api:api[f]||'(없음)',status:j.status,reason:j.reason});
+      }
+      for(const f of SEM){
+        const tval=(cmpItems.find(c=>c['의약품명']===p)||{})[f]||'';
+        allResults.push({product:p,field:f,table:tval,api:'(의미 단위 — 원문 만 비교)',status:'🟠',reason:'의미 단위 항목 — LLM 확인 필요'});
+      }
+    }
+    lastResults=allResults;lastProducts=products;
+    document.getElementById('resultBox').style.display='block';
+    renderTable();
+    toast('검증 완료 · '+allResults.length+'행');
+  }catch(e){
+    toast('오류: '+e.message,'err');console.error(e);
+  }finally{
+    btn.disabled=false;btn.textContent='🚀 즉시 검증';
+  }
+}
+
+function renderTable(){
+  const onlyRed=document.getElementById('onlyRed').checked;
+  const body=document.getElementById('resultBody');
+  const filt=onlyRed?lastResults.filter(r=>r.status==='🔴'):lastResults;
+  body.innerHTML=filt.map((r,i)=>{
+    const cls=fmtStatus(r.status);
+    const isOrange=r.status==='🟠';
+    return `<tr class="${cls}">
+      <td>${i+1}</td>
+      <td>${esc(r.product)}</td>
+      <td>${esc(r.field)}</td>
+      <td>${esc(r.table||'(빈칸)')}</td>
+      <td>${esc(r.api)}</td>
+      <td class="status">${r.status}</td>
+      <td>${esc(r.reason)}</td>
+      <td class="act">${isOrange?'<button class="copy" onclick="copyPrompt('+i+')">🤖 복사</button>':''}</td>
+    </tr>`;
+  }).join('');
+  const c={};
+  lastResults.forEach(r=>{c[r.status]=(c[r.status]||0)+1});
+  document.getElementById('summary').textContent=
+    '총 '+lastResults.length+'건 · 🟢'+c['🟢']+' 🔴'+c['🔴']+' 🟡'+c['🟡']+' 🟠'+c['🟠']+' ⚪'+c['⚪'];
+}
+function esc(s){return String(s||'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))}
+
+function buildPrompt(r){
+  return `[비교 1] 심의자료 원문 (저장값 그대로, 수정 금지):\n"${r.table||'(빈칸)'}"\n\n[비교 2] 공식 허가·약가 원문 (사용자가 nedrug.mfds.go.kr / hira.or.kr 에서 복사해 붙여넣음):\n"${r.api||'(미수신)'}"\n\n품목: ${r.product}\n필드: ${r.field}\n판정 후보:\n  ✅ 의미 일치\n  ⚠ 일부 차이\n  ❌ 의미 불일치 / 범위 확대\n핵심 차이 (대상질환·연령·용량·주기·단위): 한 줄\n\n원문 인용 없이 답하거나 기억에 의존한 답변은 부정확하므로 폐기.`;
+}
+
+function copyPrompt(i){
+  const r=document.getElementById('onlyRed').checked?
+    lastResults.filter(x=>x.status==='🔴')[i]:
+    lastResults[i];
+  if(!r)return;
+  const txt=buildPrompt(r);
+  copyText(txt);
+}
+function copyOrangeAll(){
+  const arr=lastResults.filter(r=>r.status==='🟠');
+  if(!arr.length){toast('🟠 행이 없어요','warn');return}
+  const txt=arr.map((r,i)=>'=== 항목 '+(i+1)+' ===\n'+buildPrompt(r)).join('\n\n');
+  copyText('총 '+arr.length+'건 일괄 검토\n\n'+txt);
+}
+async function copyText(t){
+  try{
+    if(navigator.clipboard&&window.isSecureContext){
+      await navigator.clipboard.writeText(t);
+    }else{
+      const ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.left='-9999px';
+      document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
+    }
+    toast('프롬프트 복사됨 · LLM에 Ctrl+V');
+  }catch(e){toast('복사 실패: '+e.message,'err')}
+}
+
+function toCSV(rows){
+  const h=['제품','필드','비교표','원문','판정','근거'];
+  const esc=v=>'"'+String(v||'').replaceAll('"','""')+'"';
+  return h.join(',')+'\n'+rows.map(r=>[r.product,r.field,r.table,r.api,r.status,r.reason].map(esc).join(',')).join('\n');
+}
+function downloadCSV(){
+  const blob=new Blob(['\uFEFF'+toCSV(lastResults)],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='검증결과_'+(today())+'.csv';a.click();
+  toast('결과 CSV 다운로드 완료');
+}
+
+document.getElementById('refDate').value=today();
+updateKeyBadge();
+</script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v3d52b47920f24c319d37e2661827c42b1787588026925" integrity="sha512-d9sL6GJLXn6fInD1+TVXhTcQOsmxeHfmHAvwGDIxp5TO+uo1fiWW7mHomMj4MLRlCsJDTqXzWLHJFFlPCEIj/A==" data-cf-beacon='{"version":"2024.11.0","token":"4edd5f8ec12a48cfa682ab8261b80a79"}' crossorigin="anonymous"></script>
+</body>
+</html>
