@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""의약품 심의자료 검증기 (Streamlit only)
-식약처 목록·상세 + 심평원 약가를 호출하여 허가원문.csv / 약가원문.csv 생성.
-키는 사이드바 텍스트박스로 한 번만 입력 (사용자 템플릿의 tf/text_input 패턴 그대로).
-키가 비어있으면 데모(mock)로 자동 전환 — 키 로직이 모듈 임포트 시 절대 실행되지 않음.
+"""의약품 심의자료 검증기 (Streamlit v6.2)
+- 사용자 원본(user_template.py)의 MFDS_LIST_URL = getDrugPrdtPrmsnInq07 흐름 그대로 port
+- itemName 파라미터로 1차 검색 → 응답 items 전체를 클라이언트에서 normalize substring 필터
+- 검색 결과는 화면에 후보 전체를 st.multiselect로 노출 (잘못된 매칭을 사용자가 직접 걸러낼 수 있게)
+- 허가 상세 + 약가 + 비교표 검증까지 한 화면에서 처리 (CSV는 옵션 다운로드)
+- 모든 키 처리는 with st.sidebar: 안에서만 수행
+- 모듈 레벨 차단 호출 (argparse / sys.argv / getpass / input) 0건
 """
+from __future__ import annotations
 import csv
 import hashlib
 import json
@@ -18,80 +22,85 @@ from pathlib import Path
 
 import streamlit as st
 
-# ───────── 1. 상수 (HTML 파서와 문자 단위 일치) ─────────
-PERMIT_FIELDS = [
-    '의약품명', '성분명', '제조판매사', '함량', '제형',
-    '적응증', '용법용량', '소아', '보관', '금기',
-    'BAR', '허가일자', 'ITEM_SEQ',
-]
-PRICE_FIELDS = [
-    '의약품명', '약가', '적용시작일', '적용종료일', 'mdsCd', '제조판매사',
-]
+# ───────── 1. 상수 ─────────
 MFDS_LIST = os.getenv(
-    'MFDS_LIST_URL',
-    'http://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07',
+    "MFDS_LIST_URL",
+    "http://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07",
 )
 MFDS_DETAIL = os.getenv(
-    'MFDS_DETAIL_URL',
-    'https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq06',
+    "MFDS_DETAIL_URL",
+    "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq06",
 )
 HIRA_URL = os.getenv(
-    'HIRA_PRICE_URL',
-    'https://apis.data.go.kr/B551182/dgamtCrtrInfoService1.2/getDgamtList',
+    "HIRA_PRICE_URL",
+    "https://apis.data.go.kr/B551182/dgamtCrtrInfoService1.2/getDgamtList",
 )
 
-# ───────── 2. 텍스트 정규화 · 파싱 ─────────
+PERMIT_FIELDS = [
+    "의약품명", "성분명", "제조판매사", "함량", "제형",
+    "적응증", "용법용량", "소아", "보관", "금기",
+    "BAR", "허가일자", "ITEM_SEQ",
+]
+PRICE_FIELDS = ["의약품명", "약가", "적용시작일", "적용종료일", "mdsCd", "제조판매사"]
+
+# ───────── 2. 정규화 (querystring과 ITEM_NAME 양쪽에 동일 적용) ─────────
 def _normalize(t):
-    return re.sub(r'\s+', ' ', str(t or '')).replace('\u3000', ' ').strip()
+    """공백·괄호·중점·특수기호 제거 후 lower() — substring 매칭용"""
+    if not t:
+        return ""
+    s = re.sub(r"\s+", "", str(t))
+    s = re.sub(r"[\(\)\[\]\{\}_:·,\.·\-]", "", s)
+    return s.lower()
 
 
-def extract_amount(name):
+def _amount(name):
     m = re.search(
-        r'\d+(?:\.\d+)?\s*(?:mg|g|mcg|μg|㎍|IU|mEq|mL|%)\s*(?:/\s*\d+(?:\.\d+)?\s*(?:mg|mL))?',
-        name or '',
+        r"\d+(?:\.\d+)?\s*(?:mg|g|mcg|μg|㎍|IU|mEq|mL|%)\s*(?:/\s*\d+(?:\.\d+)?\s*(?:mg|mL))?",
+        name or "",
     )
-    return m.group(0).strip() if m else ''
+    return m.group(0).strip() if m else ""
 
 
 _FORM_MAP = [
-    ('서방정', ['SR', 'CR', 'XR', 'ER', '서방']),
-    ('캡슐', ['Cap', 'Capsule', '캡슐']),
-    ('주사', ['Inj', 'Injection', 'inj', '주사']),
-    ('바이알', ['vial', 'Vial']),
-    ('펜', ['pen', 'Pen']),
-    ('현탁액', ['Susp', 'susp']),
-    ('점안액', ['Ophth', 'eye']),
-    ('정', ['Tab', 'Tablet', '정']),
+    ("서방정", ["SR", "CR", "XR", "ER", "서방"]),
+    ("캡슐", ["Cap", "Capsule", "캡슐"]),
+    ("주사", ["Inj", "Injection", "주사"]),
+    ("바이알", ["vial", "Vial"]),
+    ("펜", ["pen", "Pen"]),
+    ("현탁액", ["Susp", "susp"]),
+    ("점안액", ["Ophth", "eye"]),
+    ("정", ["Tab", "Tablet", "정"]),
+    ("설하정", ["설하"]),
 ]
 
 
-def extract_form(name):
+def _form(name):
     for ko, syns in _FORM_MAP:
         for s in syns:
-            if s.lower() in (name or '').lower():
+            if s.lower() in (name or "").lower():
                 return ko
-    return ''
+    return ""
 
 
-def sectionize(nbdoc, anchor_keys):
+def _section(nbdoc, anchor_keys):
     if not nbdoc:
-        return ''
-    txt = re.sub(r'<[^>]+>', ' ', nbdoc)
-    txt = re.sub(r'\s+', ' ', txt)
+        return ""
+    txt = re.sub(r"<[^>]+>", " ", nbdoc)
+    txt = re.sub(r"\s+", " ", txt)
     for k in anchor_keys:
-        m = re.search(re.escape(k) + r'([\s\S]{0,500}?)(?=\d+\.\s|※|\Z)', txt)
+        m = re.search(re.escape(k) + r"([\s\S]{0,500}?)(?=\d+\.\s|※|\Z)", txt)
         if m:
             return m.group(1).strip()
-    return ''
+    return ""
 
 
-# ───────── 3. 캐시 (로컬 JSON 파일) ─────────
-_CACHE_DIR = Path(__file__).resolve().parent / 'cache'
-_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+# ───────── 3. 캐시 ─────────
+_CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
 
 def _cache_path(key):
-    return _CACHE_DIR / (hashlib.sha1(key.encode('utf-8')).hexdigest() + '.json')
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _CACHE_DIR / (hashlib.sha1(key.encode("utf-8")).hexdigest() + ".json")
 
 
 def cache_get(key, ttl_days=7):
@@ -101,400 +110,493 @@ def cache_get(key, ttl_days=7):
     if time.time() - p.stat().st_mtime > ttl_days * 86400:
         return None
     try:
-        return json.loads(p.read_text(encoding='utf-8'))
+        return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
 
 
 def cache_put(key, data):
-    _cache_path(key).write_text(
-        json.dumps(data, ensure_ascii=False), encoding='utf-8',
-    )
+    _cache_path(key).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-# ───────── 4. HTTP 클라이언트 (JSON 시도 → 실패 시 XML text 반환) ─────────
-def http_get_json(url, params, timeout=30):
-    key = params.get('serviceKey')
-    body_params = {k: v for k, v in params.items() if k != 'serviceKey' and v is not None}
-    qs = '&'.join(
-        f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in body_params.items()
-    )
-    full = url + ('?' + qs if qs else '')
+# ───────── 4. HTTP 클라이언트 (JSON → failed XML fallback) ─────────
+def http_json(url, params, timeout=30):
+    key = params.get("serviceKey")
+    body_params = {k: v for k, v in params.items() if k != "serviceKey" and v is not None}
+    qs = "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in body_params.items())
+    full = url + ("?" + qs if qs else "")
     if key:
-        sep = '&' if qs else '?'
+        sep = "&" if qs else "?"
         full += f"{sep}serviceKey={urllib.parse.quote(str(key), safe='')}"
     try:
         with urllib.request.urlopen(full, timeout=timeout) as r:
-            raw = r.read().decode('utf-8', errors='ignore')
+            raw = r.read().decode("utf-8", errors="ignore")
         try:
             return json.loads(raw)
         except Exception:
-            return {'_xml': raw}
+            return {"_xml": raw}
     except urllib.error.HTTPError as e:
-        return {'_http_error': e.code, '_body': e.read().decode('utf-8', errors='ignore')}
+        return {"_http_error": e.code, "_body": e.read().decode("utf-8", errors="ignore")}
     except Exception as e:
-        return {'_net_error': str(e)}
+        return {"_net_error": str(e)}
 
 
-# ───────── 5. 식약처/심평원 호출 (모든 등록 의약품 일반) ─────────
-def find_mfds(item_name, key):
-    """식약처 목록에서 itemName으로 ITEM_SEQ 매칭 (특정 약 이름 하드코딩 없음)"""
-    cached = cache_get('mfds_list:' + item_name)
+# ───────── 5. MFDS LIST 검색 — 원본 흐름 그대로 + 정규화 substring 후필터 ─────────
+def search_mfds(query, key):
+    """원본과 동일하게 itemName 파라미터로 호출 → 응답 items 전체를 정규화 substring로 필터"""
+    q_norm = _normalize(query)
+    cached = cache_get(f"mfds_search:{query}")
     data = cached
     if data is None and key:
-        params = {
-            'itemName': item_name, 'numOfRows': 30, 'pageNo': 1, 'type': 'json',
-        }
-        data = http_get_json(MFDS_LIST, {**params, 'serviceKey': key}) or {}
-        cache_put('mfds_list:' + item_name, data)
-    if not data:
-        return None
-    body = (data.get('body') or {}).get('items') or []
-    if isinstance(body, dict):
-        body = [body]
-    if not body:
-        return None
-    return body[0]
+        params = {"itemName": query, "numOfRows": 100, "pageNo": 1, "type": "json"}
+        data = http_json(MFDS_LIST, {**params, "serviceKey": key}) or {}
+        cache_put(f"mfds_search:{query}", data)
+    items = (data.get("body") or {}).get("items") if isinstance(data, dict) else None
+    if isinstance(items, dict):
+        items = [items]
+    items = items or []
+    if not items or not q_norm:
+        return items
+    # ★ 사용자 원본엔 없는 강제 후필터: normalize(query) ⊆ normalize(ITEM_NAME)
+    filtered = [
+        r for r in items if q_norm in _normalize(r.get("ITEM_NAME", ""))
+    ]
+    return filtered
 
 
 def fetch_detail(item_seq, key):
-    cached = cache_get('mfds_detail:' + str(item_seq))
-    data = cached
-    if data is None and key:
-        params = {'itemSeq': item_seq, 'type': 'json'}
-        data = http_get_json(MFDS_DETAIL, {**params, 'serviceKey': key}) or {}
-        cache_put('mfds_detail:' + str(item_seq), data)
-    return data or {}
+    cached = cache_get(f"mfds_detail:{item_seq}")
+    if cached is not None:
+        return cached
+    if not key:
+        return {}
+    try:
+        params = {"itemSeq": item_seq, "type": "json"}
+        data = http_json(MFDS_DETAIL, {**params, "serviceKey": key}) or {}
+        cache_put(f"mfds_detail:{item_seq}", data)
+        return data
+    except Exception:
+        return {}
 
 
-def fetch_price(itm_nm, key):
-    cached = cache_get('hira:' + itm_nm)
-    data = cached
-    if data is None and key:
-        params = {
-            'itemName': itm_nm, 'numOfRows': 30, 'pageNo': 1, 'type': 'json',
-        }
-        data = http_get_json(HIRA_URL, {**params, 'serviceKey': key}) or {}
-        cache_put('hira:' + itm_nm, data)
-    return data or {}
+def fetch_price(item_name, key):
+    cached = cache_get(f"hira:{item_name}")
+    if cached is not None:
+        return cached
+    if not key:
+        return {}
+    try:
+        params = {"itemName": item_name, "numOfRows": 30, "pageNo": 1, "type": "json"}
+        data = http_json(HIRA_URL, {**params, "serviceKey": key}) or {}
+        cache_put(f"hira:{item_name}", data)
+        return data
+    except Exception:
+        return {}
 
 
-# ───────── 6. 데모(mock) — 특수 분기 없음, 어떤 이름이든 마지막 else로 동작 ─────────
-def mock_mfds(p):
-    p_low = (p or '').lower()
-    if '리리카' in p or 'lyrica' in p_low:
-        return {
-            'ITEM_SEQ': 'MOCK_LYR', 'ITEM_NAME': '리리카캡슐75밀리그램(프레가발린)',
-            'ENTP_NAME': '비아트리스코리아(주)', 'ITEM_PERMIT_DATE': '2010-03-15',
-            'MAIN_ITEM_INGR': '프레가발린', 'INGR_NAME': 'Pregabalin',
-            'BAR_CODE': '8801234500011',
-        }
-    if '디카맥스' in p or 'dicamax' in p_low:
-        return {
-            'ITEM_SEQ': 'MOCK_DIC', 'ITEM_NAME': '디카맥스D정(Calcium carbonate + Cholecalciferol)',
-            'ENTP_NAME': '동아제약(주)', 'ITEM_PERMIT_DATE': '2018-07-10',
-            'MAIN_ITEM_INGR': '칼슘카보네이트+콜레칼시페롤',
-            'INGR_NAME': 'Calcium carbonate + Cholecalciferol',
-            'BAR_CODE': '8806462000011',
-        }
-    if '타이레놀' in p or 'tylenol' in p_low:
-        return {
-            'ITEM_SEQ': 'MOCK_TYL', 'ITEM_NAME': '타이레놀정500밀리그램',
-            'ENTP_NAME': '한국존슨앤드존슨(주)', 'ITEM_PERMIT_DATE': '2000-01-01',
-            'MAIN_ITEM_INGR': '아세트아미노펜', 'INGR_NAME': 'Acetaminophen',
-            'BAR_CODE': '8806458000011',
-        }
-    # 어떤 이름이든 마지막 else로 응답 (특정 약 화이트리스트 아님)
-    return {
-        'ITEM_SEQ': 'MOCK_X', 'ITEM_NAME': p, 'ENTP_NAME': '한독소비(주)',
-        'ITEM_PERMIT_DATE': '2020-01-01', 'MAIN_ITEM_INGR': p, 'INGR_NAME': p,
-        'BAR_CODE': '8800000000000',
-    }
+# ───────── 6. 데모 DB (원본에 있던 것과 같은 흐름, 검색 후필터까지 적용) ─────────
+# 등록 의약품 7종 — 전체 식약처 DB 일반화 매칭 검증용
+_MOCK_LIST = [
+    {"ITEM_SEQ": "MOCK_LYR",     "ITEM_NAME": "리리카캡슐75밀리그램(프레가발린)",
+     "ENTP_NAME": "비아트리스코리아(주)", "ITEM_PERMIT_DATE": "2010-03-15",
+     "CANCEL_NAME": "정상"},
+    {"ITEM_SEQ": "MOCK_LYRSR",   "ITEM_NAME": "리리카CR서방정330밀리그램(프레가발린)",
+     "ENTP_NAME": "비아트리스코리아(주)", "ITEM_PERMIT_DATE": "2014-09-20",
+     "CANCEL_NAME": "정상"},
+    {"ITEM_SEQ": "MOCK_NARC",    "ITEM_NAME": "나르코정(나프록센나트륨)",
+     "ENTP_NAME": "한독소비(주)", "ITEM_PERMIT_DATE": "2008-05-10",
+     "CANCEL_NAME": "정상"},
+    {"ITEM_SEQ": "MOCK_NARC_SUB","ITEM_NAME": "나르코설하정5밀리그램(나파모스틴)",
+     "ENTP_NAME": "한독소비(주)", "ITEM_PERMIT_DATE": "2015-11-01",
+     "CANCEL_NAME": "정상"},
+    {"ITEM_SEQ": "MOCK_DIC",     "ITEM_NAME": "디카맥스D정(Calcium carbonate + Cholecalciferol)",
+     "ENTP_NAME": "동아제약(주)", "ITEM_PERMIT_DATE": "2018-07-10",
+     "CANCEL_NAME": "정상"},
+    {"ITEM_SEQ": "MOCK_TYL",     "ITEM_NAME": "타이레놀정500밀리그램",
+     "ENTP_NAME": "한국존슨앤드존슨(주)", "ITEM_PERMIT_DATE": "2000-01-01",
+     "CANCEL_NAME": "정상"},
+    {"ITEM_SEQ": "MOCK_LUT",     "ITEM_NAME": "러츠날캡슐100밀리그램(루피나미드)",
+     "ENTP_NAME": "한국에자이(주)", "ITEM_PERMIT_DATE": "2012-04-12",
+     "CANCEL_NAME": "정상"},
+]
+
+_MOCK_PRICE_BY_NAME = {
+    "리리카캡슐75밀리그램":      {"itmNm": "리리카캡슐75밀리그램", "mnfEntpNm": "비아트리스코리아(주)",
+                                 "mxCprc": "523",  "adtStaDd": "2024-01-01", "sellEptDd": "", "mdsCd": "MOCK_LYR_C75"},
+    "리리카CR서방정330밀리그램":  {"itmNm": "리리카CR서방정330밀리그램", "mnfEntpNm": "비아트리스코리아(주)",
+                                 "mxCprc": "1399", "adtStaDd": "2024-04-01", "sellEptDd": "", "mdsCd": "MOCK_LYR_C330"},
+    "나르코정":                  {"itmNm": "나르코정", "mnfEntpNm": "한독소비(주)",
+                                 "mxCprc": "350",  "adtStaDd": "2024-01-01", "sellEptDd": "", "mdsCd": "MOCK_NARC_T"},
+    "나르코설하정5밀리그램":      {"itmNm": "나르코설하정5밀리그램", "mnfEntpNm": "한독소비(주)",
+                                 "mxCprc": "680",  "adtStaDd": "2024-06-01", "sellEptDd": "", "mdsCd": "MOCK_NARC_S"},
+    "디카맥스D정":               {"itmNm": "디카맥스D정", "mnfEntpNm": "동아제약(주)",
+                                 "mxCprc": "70",   "adtStaDd": "2024-07-01", "sellEptDd": "", "mdsCd": "MOCK_DIC_D"},
+    "타이레놀정500밀리그램":      {"itmNm": "타이레놀정500밀리그램", "mnfEntpNm": "한국존슨앤드존슨(주)",
+                                 "mxCprc": "120",  "adtStaDd": "2024-01-01", "sellEptDd": "", "mdsCd": "MOCK_TYL_500"},
+    "러츠날캡슐100밀리그램":      {"itmNm": "러츠날캡슐100밀리그램", "mnfEntpNm": "한국에자이(주)",
+                                 "mxCprc": "2100", "adtStaDd": "2024-01-01", "sellEptDd": "", "mdsCd": "MOCK_LUT_100"},
+}
 
 
-def mock_detail(name):
-    nb = (
-        '1. 다음 환자에게는 투여하지 말 것: 이 약의 성분에 과민증 환자에 대한 금기. '
-        '2. 소아에 대한 투여: 소아(만 12세 미만)에 대한 안전성·유효성은 확립되어 있지 않다. '
-        '3. 임부에 대한 투여: 임부 또는 임신하고 있을 가능성이 있는 여성에는 투여하지 말 것.'
+def mock_search_mfds(query):
+    q = _normalize(query)
+    return [r for r in _MOCK_LIST if q in _normalize(r["ITEM_NAME"])]
+
+
+def mock_fetch_detail(item_seq):
+    row = next((r for r in _MOCK_LIST if r["ITEM_SEQ"] == item_seq), None)
+    if not row:
+        return {}
+    nb_base = (
+        "1. 다음 환자에게는 투여하지 말 것: 이 약의 성분에 과민증 환자에 대한 금기. "
+        "2. 소아에 대한 투여: 소아(만 12세 미만)에 대한 안전성·유효성은 확립되어 있지 않다. "
+        "3. 임부에 대한 투여: 임부 또는 임신하고 있을 가능성이 있는 여성에는 투여하지 말 것."
     )
-    if '리리카' in (name or '') or 'lyrica' in (name or '').lower():
-        return {
-            'EE_DOC_DATA': '<p>말초성 신경병증 통증, 섬유근육통, 부분발작 보조요법 (성인)</p>',
-            'UD_DOC_DATA': '<p>초기 1일 150mg, 3-7일에 걸쳐 최대 600mg까지 증량. 1일 2회 분할.</p>',
-            'NB_DOC_DATA': '<p>' + nb + '</p>',
-            'STORAGE_METHOD': '기밀용기, 실온(1~30℃) 보관',
-        }
-    if '디카맥스' in (name or ''):
-        return {
-            'EE_DOC_DATA': '<p>칼슘 및 비타민 D3 보급 (칼슘·비타민D 결핍 시)</p>',
-            'UD_DOC_DATA': '<p>성인 1일 1회, 1정 (식후)</p>',
-            'NB_DOC_DATA': '<p>' + nb + '</p>',
-            'STORAGE_METHOD': '기밀용기, 실온 보관 (1~30℃)',
-        }
+    spec = {
+        "MOCK_LYR":  ("프레가발린", "말초성 신경병증 통증, 섬유근육통, 부분발작 보조요법 (성인)",
+                      "초기 1일 150mg, 3-7일에 걸쳐 최대 600mg까지 증량. 1일 2회 분할.", "9011"),
+        "MOCK_LYRSR":("프레가발린", "말초성 신경병증 통증, 섬유근육통",
+                      "초기 1일 165mg, 최대 660mg. 1일 2회.", "9012"),
+        "MOCK_NARC": ("나프록센나트륨", "골관절염, 류마티스관절염, 통증, 발열",
+                      "성인 1회 250~500mg, 1일 2회 (식후).", "9013"),
+        "MOCK_NARC_SUB": ("나파모스틴", "구내염 및 구인두 통증 완화",
+                         "성인 1회 5mg, 1일 4회까지 (혀 아래 두고 녹임).", "9014"),
+        "MOCK_DIC":  ("칼슘카보네이트+콜레칼시페롤", "칼슘 및 비타민 D3 보급",
+                      "성인 1일 1회, 1정 (식후).", "9015"),
+        "MOCK_TYL":  ("아세트아미노펜", "발열, 두통, 관절통 등 경증 통증",
+                      "성인 1회 300~500mg, 1일 3~4회.", "9016"),
+        "MOCK_LUT":  ("루피나미드", "부분발작 보조요법 (성인)",
+                      "초기 1일 200mg, 2주에 걸쳐 400mg까지 증량. 1일 2회 분할.", "9017"),
+    }.get(item_seq)
+    if not spec:
+        return {}
+    ingr, ee, ud, bar = spec
     return {
-        'EE_DOC_DATA': '허가 적응증 본문 (데모)',
-        'UD_DOC_DATA': '용법·용량 본문 (데모)',
-        'NB_DOC_DATA': '<p>' + nb + '</p>',
-        'STORAGE_METHOD': '기밀용기, 실온 보관',
+        "MAIN_ITEM_INGR": ingr,
+        "EE_DOC_DATA": f"<p>{ee}</p>",
+        "UD_DOC_DATA": f"<p>{ud}</p>",
+        "NB_DOC_DATA": f"<p>{nb_base}</p>",
+        "STORAGE_METHOD": "기밀용기, 실온(1~30℃) 보관",
+        "BAR_CODE": f"880654300{bar}",
+        "ITEM_PERMIT_DATE": row.get("ITEM_PERMIT_DATE", ""),
+        "ITEM_NAME": row["ITEM_NAME"],
+        "ENTP_NAME": row["ENTP_NAME"],
     }
 
 
-def mock_price(name, ref_date):
-    rows = []
-    if '리리카' in (name or '') and ('75' in name or '캡슐' in name):
-        rows = [{
-            'itmNm': '리리카캡슐75밀리그램', 'mnfEntpNm': '비아트리스코리아(주)',
-            'mxCprc': '523', 'adtStaDd': '2024-01-01', 'sellEptDd': '', 'mdsCd': 'MOCK_LYR_C75',
-        }]
-    elif '리리카' in (name or ''):
-        rows = [{
-            'itmNm': '리리카CR서방정330밀리그램', 'mnfEntpNm': '비아트리스코리아(주)',
-            'mxCprc': '1399', 'adtStaDd': '2024-04-01', 'sellEptDd': '', 'mdsCd': 'MOCK_LYR_C330',
-        }]
-    elif '디카맥스' in (name or ''):
-        rows = [{
-            'itmNm': '디카맥스D정', 'mnfEntpNm': '동아제약(주)',
-            'mxCprc': '70', 'adtStaDd': '2024-07-01', 'sellEptDd': '', 'mdsCd': 'MOCK_DIC_D',
-        }]
-    elif '타이레놀' in (name or ''):
-        rows = [{
-            'itmNm': '타이레놀정500밀리그램', 'mnfEntpNm': '한국존슨앤드존슨(주)',
-            'mxCprc': '120', 'adtStaDd': '2024-01-01', 'sellEptDd': '', 'mdsCd': 'MOCK_TYL_500',
-        }]
+def mock_fetch_price(item_name):
+    pr = _MOCK_PRICE_BY_NAME.get(item_name)
+    if not pr:
+        return {"response": {"body": {"items": []}}}
+    return {"response": {"body": {"items": [pr]}}}
+
+
+# ───────── 7. 1품목 통합 조회 (허가 상세 + 약가) ─────────
+def fetch_one_product(item_seq, item_name, entp_name, key, demo):
+    """return dict with all PERMIT_FIELDS + PRICE_FIELDS values"""
+    if demo:
+        det = mock_fetch_detail(item_seq)
+        pr = mock_fetch_price(item_name)
     else:
-        rows = [{
-            'itmNm': name, 'mnfEntpNm': '한독소비(주)', 'mxCprc': '1000',
-            'adtStaDd': '2024-01-01', 'sellEptDd': '', 'mdsCd': 'MOCK_X',
-        }]
-    return {'response': {'body': {'items': rows}}}
+        det = fetch_detail(item_seq, key) if key else {}
+        pr = fetch_price(item_name, key) if key else {}
 
-
-# ───────── 7. CSV emit ─────────
-def emit_permit_csv(rows, path):
-    with open(path, 'w', encoding='utf-8-sig', newline='') as f:
-        w = csv.writer(f)
-        w.writerow(PERMIT_FIELDS)
-        for r in rows:
-            w.writerow([r.get(k, '') for k in PERMIT_FIELDS])
-
-
-def emit_price_csv(rows, path):
-    with open(path, 'w', encoding='utf-8-sig', newline='') as f:
-        w = csv.writer(f)
-        w.writerow(PRICE_FIELDS)
-        for r in rows:
-            w.writerow([r.get(k, '') for k in PRICE_FIELDS])
-
-
-# ───────── 8. 메인 작업 (key/demo 외부에서 인자로 받음) ─────────
-def run(products, key, ref_date, demo):
-    """products: list[str]  key: str|None  ref_date: 'YYYY-MM-DD'  demo: bool"""
-    permit_rows, price_rows, errors = [], [], []
-
-    for p in products:
-        p = (p or '').strip()
-        if not p:
+    items = (((pr.get("response") or {}).get("body") or {}).get("items")) or []
+    if isinstance(items, dict):
+        items = [items]
+    current = None
+    ref = time.strftime("%Y%m%d")
+    for it in items:
+        ad = str(it.get("adtStaDd", "")).replace("-", "")
+        se = str(it.get("sellEptDd", "")).replace("-", "")
+        if ad and ad > ref:
             continue
-        try:
-            if demo:
-                base = mock_mfds(p)
-            else:
-                base = find_mfds(p, key) or {}
+        if se and se < ref:
+            continue
+        if not current or ad > str(current.get("adtStaDd", "")):
+            current = it
 
-            item_name = base.get('ITEM_NAME') or p
-            item_seq = base.get('ITEM_SEQ', '')
-            entp = base.get('ENTP_NAME', '')
-            permit_dt = base.get('ITEM_PERMIT_DATE', '')
-            main_ingr = base.get('MAIN_ITEM_INGR', '') or base.get('INGR_NAME', '')
-            bar = base.get('BAR_CODE', '')
+    ee = det.get("EE_DOC_DATA", "") or ""
+    ud = det.get("UD_DOC_DATA", "") or ""
+    nb = det.get("NB_DOC_DATA", "") or ""
+    ee_clean = re.sub(r"<[^>]+>", " ", ee)
+    ud_clean = re.sub(r"<[^>]+>", " ", ud)
 
-            if demo:
-                det = mock_detail(item_name)
-            else:
-                det = fetch_detail(item_seq, key) if (key and item_seq) else {}
-            ee = det.get('EE_DOC_DATA', '')
-            ud = det.get('UD_DOC_DATA', '')
-            nb = det.get('NB_DOC_DATA', '')
-            stg = det.get('STORAGE_METHOD', '')
+    return {
+        "의약품명": det.get("ITEM_NAME") or item_name,
+        "성분명": det.get("MAIN_ITEM_INGR", ""),
+        "제조판매사": det.get("ENTP_NAME") or entp_name,
+        "함량": _amount(det.get("ITEM_NAME", "")),
+        "제형": _form(det.get("ITEM_NAME", "")),
+        "적응증": re.sub(r"\s+", " ", ee_clean).strip(),
+        "용법용량": re.sub(r"\s+", " ", ud_clean).strip(),
+        "소아": _section(nb, ["소아에 대한 투여"]),
+        "보관": det.get("STORAGE_METHOD", ""),
+        "금기": _section(nb, ["투여하지 말 것", "금기"]),
+        "BAR": det.get("BAR_CODE", ""),
+        "허가일자": det.get("ITEM_PERMIT_DATE", ""),
+        "ITEM_SEQ": item_seq,
+        "약가": current.get("mxCprc", "") if current else "",
+        "약가적용시작일": current.get("adtStaDd", "") if current else "",
+        "약가적용종료일": current.get("sellEptDd", "") if current else "",
+        "mdsCd": current.get("mdsCd", "") if current else "",
+    }
 
-            permit_rows.append({
-                '의약품명': item_name,
-                '성분명': main_ingr,
-                '제조판매사': entp,
-                '함량': extract_amount(item_name),
-                '제형': extract_form(item_name),
-                '적응증': _normalize(ee),
-                '용법용량': _normalize(ud),
-                '소아': sectionize(nb, ['소아에 대한 투여', '소아투여']),
-                '보관': _normalize(stg),
-                '금기': sectionize(nb, ['투여하지 말 것', '금기사항', '다음 환자에는 투여하지']),
-                'BAR': bar,
-                '허가일자': permit_dt,
-                'ITEM_SEQ': item_seq,
-            })
 
-            if demo:
-                pr = mock_price(item_name, ref_date)
-            elif key:
-                pr = fetch_price(item_name, key) or {}
-            else:
-                pr = {}
-
-            items = (((pr.get('response') or {}).get('body') or {}).get('items')) or []
-            if isinstance(items, dict):
-                items = [items]
-            ref = ref_date.replace('-', '')
-            current = None
-            for it in items:
-                ad = str(it.get('adtStaDd', '')).replace('-', '')
-                se = str(it.get('sellEptDd', '')).replace('-', '')
-                if ad and ref and ad > ref:
-                    continue
-                if se and ref and se < ref:
-                    continue
-                if not current or ad > str(current.get('adtStaDd', '')):
-                    current = it
+# ───────── 8. 비교표 파서 (사용자 붙여넣은 텍스트) ─────────
+def parse_compare(text):
+    """빈 줄 = 제품 구분, 한 줄 = '필드명|값'
+    return: list[dict]"""
+    if not text.strip():
+        return []
+    items, current = [], {}
+    for raw in text.split("\n"):
+        ln = raw.strip()
+        if not ln:
             if current:
-                price_rows.append({
-                    '의약품명': current.get('itmNm', item_name),
-                    '약가': current.get('mxCprc', ''),
-                    '적용시작일': current.get('adtStaDd', ''),
-                    '적용종료일': current.get('sellEptDd', ''),
-                    'mdsCd': current.get('mdsCd', ''),
-                    '제조판매사': current.get('mnfEntpNm', entp),
-                })
-        except Exception as e:
-            errors.append((p, str(e)))
-
-    out_dir = Path(__file__).resolve().parent
-    permit_path = out_dir / '허가원문.csv'
-    price_path = out_dir / '약가원문.csv'
-    emit_permit_csv(permit_rows, str(permit_path))
-    emit_price_csv(price_rows, str(price_path))
-    return permit_rows, price_rows, errors, str(permit_path), str(price_path)
+                items.append(current)
+                current = {}
+            continue
+        if "|" in ln and re.match(r"^[가-힣A-Za-z]", ln):
+            k, v = ln.split("|", 1)
+            k, v = k.strip(), v.strip()
+            if k == "의약품명" and current:
+                items.append(current)
+                current = {}
+            current[k] = v
+        else:
+            current["비고"] = (current.get("비고", "") + " " + ln).strip()
+    if current:
+        items.append(current)
+    return items
 
 
-# ───────── 9. Streamlit 진입점 (유일한 UI 진입점) ─────────
-st.set_page_config(page_title='의약품 심의자료 검증기', page_icon='💊', layout='wide')
-st.title('💊 의약품 심의자료 검증기')
+# ───────── 9. 비교 규칙 (공백·괄호 제거 후 단순 일치 / 일부 substring) ─────────
+SEMANTIC_FIELDS = ["적응증", "용법용량", "소아", "금기"]
+
+
+def compare_one(field, table_val, src_val):
+    tv = (table_val or "").strip()
+    sv = (src_val or "").strip()
+    if not tv and not sv:
+        return "⚪ 확인 불가", "양쪽 모두 비어있음"
+    if not tv:
+        return "🔴 수정 필요", "비교표에 기재 누락"
+    if not sv:
+        return "⚪ 확인 불가", "원문(API)에 해당 항목 비어있음"
+    if field in ("약가", "함량"):
+        tn = re.sub(r"[^\d.]", "", tv)
+        sn = re.sub(r"[^\d.]", "", sv)
+        if not tn or not sn:
+            return "⚪ 확인 불가", "수치 파싱 실패"
+        return ("🟢 일치" if tn == sn else "🔴 수정 필요"), f"비교표={tn}, 원문={sn}"
+    if field in SEMANTIC_FIELDS:
+        return "🟠 의미 단위 — LLM 확인 필요", "사용자가 🤖 복사 후 LLM에 위임"
+    tn, sn = _normalize(tv), _normalize(sv)
+    if tn == sn:
+        return "🟢 일치", "정규화 일치"
+    if tn in sn or sn in tn:
+        return "🟡 확인 필요", "정규화 부분 일치 (표현 차이 가능)"
+    return "🔴 수정 필요", f"정규화 불일치: [{tv}] vs [{sv}]"
+
+
+# ───────── 10. Streamlit UI (사이드바 단일 진입점) ─────────
+st.set_page_config(page_title="의약품 심의자료 검증기", page_icon="💊", layout="wide")
+st.title("💊 의약품 심의자료 검증기")
 st.caption(
-    '식약처 허가정보 + 심평원 약가를 호출해 허가원문.csv / 약가원문.csv 를 생성합니다. '
-    '키는 사이드바에서 한 번 입력. 비워두면 데모(mock)로 동작.'
+    "식약처·심평원 OpenAPI로 허가/약가를 조회하고, 사용자가 붙여준 비교표와 한 화면에서 검증. "
+    "키는 사이드바에서 한 번 입력. 비워두면 데모 DB(7종)로 동작."
 )
 
 
 def _resolve_initial_key():
-    """Secrets에 등록된 키가 있으면 초기값으로 사용 (선택 사항)"""
     try:
-        v = st.secrets.get('DATA_GO_KR_KEY') or st.secrets.get('MFDS_SERVICE_KEY')
+        v = st.secrets.get("DATA_GO_KR_KEY") or st.secrets.get("MFDS_SERVICE_KEY")
         if v:
             return str(v).strip()
     except Exception:
         pass
-    return ''
+    return ""
 
 
 with st.sidebar:
-    st.header('🔑 인증키')
-    initial_key = _resolve_initial_key()
-    mfds_key = st.text_input(
-        '식약처 인증키 (선택)', value=initial_key, type='password',
-        help='data.go.kr 에서 발급받은 본인 키. 비워두면 자동으로 데모(mock) 모드로 동작합니다.',
-        key='mfds_key_input',
-    )
-    hira_key = st.text_input(
-        '심평원 인증키 (선택)', value=initial_key, type='password',
-        help='심평원 약가 조회가 필요할 때 입력. mfds 키와 동일해도 작동합니다.',
-        key='hira_key_input',
-    )
-    st.caption('키는 세션 메모리에만 보관되며 외부 서버로 전송되지 않습니다.')
+    st.header("🔑 인증키")
+    init_key = _resolve_initial_key()
+    mfds_key = st.text_input("식약처 인증키 (선택)", value=init_key, type="password",
+                             help="data.go.kr 에서 발급받은 본인 키. 비워두면 데모(7종) 동작.",
+                             key="mfds_key_input")
+    st.caption("키는 세션 메모리에만 보관. 외부 서버로 전송되지 않습니다.")
 
     st.divider()
-    st.header('📋 조회 옵션')
-    products_text = st.text_area(
-        '💊 제품명 (쉼표 구분)',
-        placeholder='예: 리리카 캡슐 75mg, 디카맥스D 500, 타이레놀 500mg',
-        height=100, key='products_text_input',
-    )
-    ref_date_in = st.date_input(
-        '📅 약가 기준일', value=time.strftime('%Y-%m-%d'),
-        key='ref_date_input',
-    )
-    run_btn = st.button('🚀 즉시 실행', type='primary', use_container_width=True)
+    st.header("📅 옵션")
+    ref_date_in = st.date_input("약가 기준일", value=time.strftime("%Y-%m-%d"),
+                                key="ref_date_input")
 
-# 사이드바에서 받은 두 키를 단일 serviceKey 로 통합 (mfds 키 하나에 hira 키 뒤이어 붙임)
-combined_key = (mfds_key or '').strip()
-if (mfds_key or '').strip() and (hira_key or '').strip() and mfds_key != hira_key:
-    combined_key = f"{mfds_key.strip()},{hira_key.strip()}"
-
-key = combined_key
+key = (mfds_key or "").strip() or None
 demo_mode = not bool(key)
-products = [s.strip() for s in (products_text or '').split(',') if s.strip()]
 
-if not run_btn:
-    if demo_mode:
-        st.info(
-            '👈 왼쪽 사이드바에서 인증키를 입력하면 실제 식약처·심평원 데이터가 조회됩니다. '
-            '키를 비워두면 데모(mock) 데이터로 전체 흐름을 체험할 수 있습니다.'
-        )
-    else:
-        st.info(
-            '👈 왼쪽 사이드바에서 제품명을 쉼표로 구분해 입력한 뒤 [🚀 즉시 실행]을 누르세요.'
-        )
-    st.stop()
 
-if not products and not demo_mode:
-    st.warning('⚠ 제품명을 1개 이상 입력하세요.')
-    st.stop()
-
-if not products:
-    products = ['리리카 캡슐 75mg', '디카맥스D 500', '타이레놀 500mg']
-    st.info('ℹ 데모 모드 기본 3건으로 실행합니다. 제품명을 직접 입력해 자유 의약품도 조회할 수 있습니다.')
-
-ref_date = ref_date_in.strftime('%Y-%m-%d') if hasattr(ref_date_in, 'strftime') else str(ref_date_in)
-
-with st.spinner('⏳ 식약처·심평원 호출 중…' if not demo_mode else '⏳ 데모 데이터 생성 중…'):
-    permit_rows, price_rows, errors, permit_path, price_path = run(
-        products, key or None, ref_date, demo_mode,
-    )
-
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader('📑 허가원문')
-    st.download_button(
-        '⬇ 허가원문.csv 다운로드',
-        Path(permit_path).read_bytes(),
-        file_name='허가원문.csv', mime='text/csv',
-    )
-    try:
-        import pandas as pd  # 표시만 pandas 사용 (없어도 동작)
-        st.dataframe(pd.read_csv(permit_path, dtype=str).fillna(''),
-                     use_container_width=True, height=320)
-    except Exception:
-        with open(permit_path, 'r', encoding='utf-8-sig') as f:
-            st.text(f.read())
-
-with col2:
-    st.subheader('💰 약가원문')
-    st.download_button(
-        '⬇ 약가원문.csv 다운로드',
-        Path(price_path).read_bytes(),
-        file_name='약가원문.csv', mime='text/csv',
-    )
-    try:
-        import pandas as pd
-        st.dataframe(pd.read_csv(price_path, dtype=str).fillna(''),
-                     use_container_width=True, height=320)
-    except Exception:
-        with open(price_path, 'r', encoding='utf-8-sig') as f:
-            st.text(f.read())
-
-st.success(
-    f'✅ 완료 — 허가원문 {len(permit_rows)}행, 약가원문 {len(price_rows)}행 · '
-    f'기준일 {ref_date} · 모드={"데모" if demo_mode else "실제 API"}'
+# ───── 본문 좌측: 검색 + 다중선택 ─────
+st.subheader("1️⃣ 의약품 검색")
+query_input = st.text_input(
+    "의약품명 일부 입력 (예: 나르코, 나르코설하정, 리리카)",
+    placeholder="예: 나르코",
+    key="query_input",
 )
-if errors:
-    with st.expander(f'⚠ 처리 중 오류 {len(errors)}건'):
-        for p, e in errors:
-            st.write(f'- {p}: {e}')
+
+if st.button("🔍 검색", type="secondary", use_container_width=False) or query_input:
+    if not query_input.strip():
+        st.info("💡 의약품명 일부를 입력하면 검색됩니다.")
+        st.stop()
+    if demo_mode:
+        candidates = mock_search_mfds(query_input)
+    else:
+        candidates = search_mfds(query_input, key)
+    if not candidates:
+        st.warning(f"'{query_input}' 검색 결과 0건입니다. 다른 키워드로 시도해 보세요.")
+        st.stop()
+    # 중복 ITEM_SEQ 제거 후 multiselect 표시
+    seen = set()
+    deduped = []
+    for r in candidates:
+        seq = r.get("ITEM_SEQ", "")
+        if seq and seq not in seen:
+            seen.add(seq)
+            deduped.append(r)
+    st.success(f"🔎 '{query_input}' 검색 결과 {len(deduped)}건 (전체 후보 표시)")
+    by_seq = {r["ITEM_SEQ"]: r for r in deduped}
+    labels = []
+    for seq, r in by_seq.items():
+        labels.append(f"{r.get('ITEM_NAME','')} | {r.get('ENTP_NAME','')} | ITEM_SEQ={seq}")
+    chosen = st.multiselect(
+        "비교할 품목을 모두 선택하세요 (복수 선택 가능)",
+        options=list(by_seq.keys()),
+        default=list(by_seq.keys())[:1],
+        format_func=lambda s: next(
+            (f"{by_seq[s].get('ITEM_NAME','')} | {by_seq[s].get('ENTP_NAME','')}")
+            for _ in [0] if s in by_seq
+        ),
+        key="chosen_multiselect",
+    )
+
+    # ───── 본문 우측: 비교표 붙여넣기 ─────
+    colL, colR = st.columns([1, 1])
+    with colR:
+        st.subheader("2️⃣ 비교표 (선택 — 빈 줄로 제품 구분)")
+        cmp_default = (
+            "의약품명|리리카CR서방정330밀리그램\n"
+            "함량|330mg\n"
+            "제형|서방정\n"
+            "적응증|말초성 신경병증 통증\n"
+            "용법용량|초기 1일 165mg, 최대 660mg\n"
+            "약가|1,399원\n"
+            "\n"
+            "의약품명|리리카캡슐75밀리그램\n"
+            "함량|75mg\n"
+            "약가|523원\n"
+        )
+        cmp_text = st.text_area("비교표 입력", value=cmp_default, height=200,
+                                key="cmp_text")
+        cmp_items = parse_compare(cmp_text)
+
+    if not chosen:
+        st.info("위에서 비교할 품목을 1개 이상 선택하세요.")
+        st.stop()
+
+    # ───── 통합 조회 + 비교 ─────
+    if st.button("✅ 선택 품목 조회 + 검증", type="primary", use_container_width=False):
+        with st.spinner("⏳ 식약처·심평원 호출 중…" if not demo_mode
+                        else "⏳ 데모 DB 조회 중…"):
+            results = []
+            for seq in chosen:
+                r = by_seq[seq]
+                data = fetch_one_product(seq, r.get("ITEM_NAME", ""),
+                                          r.get("ENTP_NAME", ""), key, demo_mode)
+                results.append((r, data))
+
+        # ───── 3) 화면 내 직접 표시 ─────
+        st.subheader("3️⃣ 허가·약가 원본 (화면 표시)")
+        for r, data in results:
+            label = f"💊 {data['의약품명']}  |  {data['제조판매사']}  |  약가 {data['약가']}원"
+            with st.expander(label, expanded=True):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown("**📑 식약처 허가 (13필드)**")
+                    for f in PERMIT_FIELDS:
+                        st.write(f"- **{f}**: {data.get(f, '') or '(없음)'}")
+                with col_b:
+                    st.markdown("**💰 심평원 약가**")
+                    for f in PRICE_FIELDS:
+                        v = data.get(f if f in PRICE_FIELDS else
+                                     ("약가" if f == "의약품명" and "약가" in data else
+                                      "약가적용시작일" if f == "의약품명" else f), "") or ""
+                        st.write(f"- **{f}**: {v or '(없음)'}")
+                    st.write(f"- **적용시작일**: {data.get('약가적용시작일','')}")
+                    st.write(f"- **적용종료일**: {data.get('약가적용종료일','')}")
+                    st.write(f"- **mdsCd**: {data.get('mdsCd','')}")
+
+        # ───── 4) 비교 검증 결과 ─────
+        st.subheader("4️⃣ 비교표 검증 결과")
+        if not cmp_items:
+            st.info("비교표를 입력하면 여기에 검증 결과 표시.")
+        else:
+            cmp_by_name = {it.get("의약품명", ""): it for it in cmp_items}
+            rows_for_table = []
+            for r, data in results:
+                cmp_item = cmp_by_name.get(data["의약품명"]) or {}
+                for field in PERMIT_FIELDS + ["약가"]:
+                    src_val = data.get(field, "")
+                    tbl_val = cmp_item.get(field, "")
+                    status, reason = compare_one(field, tbl_val, src_val)
+                    rows_for_table.append({
+                        "품목": data["의약품명"],
+                        "필드": field,
+                        "비교표": tbl_val or "(빈칸)",
+                        "원문": src_val or "(없음)",
+                        "판정": status,
+                        "근거": reason,
+                    })
+            # 색상 마커 표
+            for row in rows_for_table:
+                color = {
+                    "🟢 일치": "#16a34a", "🔴 수정 필요": "#dc2626",
+                    "🟡 확인 필요": "#ca8a04", "🟠 의미 단위 — LLM 확인 필요": "#ea580c",
+                    "⚪ 확인 불가": "#9ca3af"
+                }.get(row["판정"], "#9ca3af")
+                st.markdown(
+                    f"<div style='border-left:5px solid {color};padding:8px 12px;"
+                    f"background:#fafafa;margin-bottom:6px;border-radius:4px'>"
+                    f"<b>{row['품목']}</b> · <b>{row['필드']}</b> · "
+                    f"<span style='color:{color};font-weight:700'>{row['판정']}</span>"
+                    f"<br/><small>비교표: {row['비교표'][:120]}</small><br/>"
+                    f"<small>원문: {row['원문'][:120]}</small><br/>"
+                    f"<small style='color:#666'>근거: {row['근거']}</small></div>",
+                    unsafe_allow_html=True,
+                )
+            # 🟠 의미 단위 LLM 프롬프트 (이전 🤖 복사)
+            llm_prompts = [r for r in rows_for_table if "🟠" in r["판정"]]
+            if llm_prompts:
+                with st.expander(f"🤖 LLM 프롬프트 ({len(llm_prompts)}건)"):
+                    for i, row in enumerate(llm_prompts, 1):
+                        prompt = (
+                            f"[비교 1] 심의자료 원문 (저장값 그대로):\n\"{row['비교표']}\"\n\n"
+                            f"[비교 2] 공식 허가 원문 (사용자가 nedrug.mfds.go.kr / hira.or.kr 에서 복사):\n"
+                            f"\"{row['원문']}\"\n\n품목: {row['품목']}\n필드: {row['필드']}\n"
+                            f"판정 후보: ✅ 의미 일치 / ⚠ 일부 차이 / ❌ 의미 불일치·범위 확대\n"
+                            f"원문 인용 없이 답하거나 기억에 의존한 답변은 부정확하므로 폐기.\n"
+                        )
+                        st.text_area(f"프롬프트 #{i} ({row['필드']})", value=prompt,
+                                     height=140, key=f"llm_p_{i}")
+
+            # ───── 5) 옵션 CSV 다운로드 ─────
+            buf = ["품목,필드,비교표,원문,판정,근거"]
+            for row in rows_for_table:
+                buf.append(f"{row['품목']},{row['필드']},\"{row['비교표']}\",\"{row['원문']}\","
+                           f"{row['판정']},{row['근거']}")
+            csv_bytes = ("\uFEFF" + "\n".join(buf)).encode("utf-8")
+            st.download_button(
+                "⬇ 검증결과.csv (옵션 다운로드)",
+                csv_bytes, file_name="검증결과.csv", mime="text/csv",
+            )
+
+        st.success(f"✅ 완료 · 모드={'데모' if demo_mode else '실제 API'} · 비교 {'있음' if cmp_items else '없음'}")
