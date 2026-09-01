@@ -10,6 +10,11 @@
 """
 from __future__ import annotations
 import argparse, csv, hashlib, json, os, re, sys, time, pathlib
+try:
+    import streamlit as st  # Streamlit Cloud / 로컬 streamlit run 양쪽 호환
+    _HAS_ST = True
+except Exception:  # CLI 모드에선 streamlit이 없어도 됨
+    _HAS_ST = False
 
 # ---------- 1. 상수 (HTML과 문자 단위로 동일) ----------
 PERMIT_FIELDS = ['의약품명','성분명','제조판매사','함량','제형','적응증','용법용량','소아','보관','금기','BAR','허가일자','ITEM_SEQ']
@@ -270,19 +275,137 @@ def run(products: list[str], key: str | None, ref_date: str, demo: bool):
     print(f'[app.py] 약가원문.csv  → {price_path}   ({len(price_rows)}행)')
     print(f'[app.py] 기준일 = {ref_date}')
 
+def _resolve_key() -> str | None:
+    """
+    키 로드 우선순위
+      1) Streamlit 사이드바 입력이 있으면 그 값
+      2) st.secrets["DATA_GO_KR_KEY"]      (Streamlit Cloud Settings → Secrets)
+      3) os.environ["DATA_GO_KR_KEY" | "MFDS_SERVICE_KEY"]
+    """
+    if _HAS_ST and hasattr(st, 'session_state'):
+        v = st.session_state.get('USER_KEY')
+        if v: return v.strip()
+    if _HAS_ST:
+        try:
+            v = st.secrets.get('DATA_GO_KR_KEY') or st.secrets.get('MFDS_SERVICE_KEY')
+            if v: return str(v).strip()
+        except Exception:
+            pass
+    return os.getenv('DATA_GO_KR_KEY') or os.getenv('MFDS_SERVICE_KEY')
+
+
+def streamlit_app():
+    """Streamlit Cloud / 로컬 streamlit run 진입점 — 사이드바에서 키·제품 입력"""
+    st.set_page_config(page_title='의약품 심의자료 검증기 v5.0', layout='wide', page_icon='💊')
+    st.title('💊 의약품 심의자료 검증기')
+    st.caption('식약처·심평원 OpenAPI 직접 호출 · 키는 사이드바에서 한 번만 입력 · 세션 동안만 유지')
+
+    # ----- 사이드바: 키 + 제품 입력 -----
+    with st.sidebar:
+        st.header('🔑 인증키')
+        key_input = st.text_input('data.go.kr 인증키', type='password',
+                                  placeholder='예: abc123...  (mfds 키 또는 mfds,hira 합본)',
+                                  help='data.go.kr 에서 발급받은 본인 키. 다른 사람과 공유 금지.')
+        st.session_state['USER_KEY'] = key_input
+        st.caption('키는 세션 메모리에만 보관 · 외부 전송 없음')
+
+        st.divider()
+        st.header('📋 조회 옵션')
+        demo_only = st.checkbox('🔧 데모 모드 (외부 호출 없이 mock)', value=not bool(key_input))
+        ref_date = st.date_input('📅 약가 기준일', value=time.strftime('%Y-%m-%d')).isoformat()
+        products_text = st.text_area('💊 제품명 (쉼표 구분)',
+                                      placeholder='예: 리리카 캡슐 75mg, 디카맥스D 500',
+                                      height=100)
+        run_btn = st.button('🚀 즉시 실행', type='primary', use_container_width=True)
+
+    if not run_btn:
+        st.info('👈 왼쪽 사이드바에서 키를 입력·저장한 뒤 [🚀 즉시 실행]을 누르세요. '
+                '키가 없거나 데모만 체험하고 싶으면 🔧 데모 모드에 체크하면 됩니다.')
+        return
+
+    key = (key_input or '').strip() or _resolve_key()
+    products = [s.strip() for s in products_text.split(',') if s.strip()]
+    if not demo_only and not key:
+        st.error('⚠ 키가 없습니다. 사이드바에 키를 입력하거나 🔧 데모 모드에 체크하세요.')
+        return
+    if not products and not demo_only:
+        st.error('⚠ 제품명을 1개 이상 입력하세요.')
+        return
+    if not products and demo_only:
+        products = ['리리카 캡슐 75mg', '디카맥스D 500', '타이레놀 500mg']  # 데모 기본 3건
+
+    with st.spinner('⏳ 식약처·심평원 호출 중…'):
+        # run()은 werkzeug에 stdout을 남기므로 Streamlit에는 st.info 로 한번 더 표시
+        run(products, key, ref_date, demo_only)
+
+    # 결과 표시
+    permit_path = pathlib.Path('허가원문.csv')
+    price_path  = pathlib.Path('약가원문.csv')
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader('📑 허가원문')
+        if permit_path.exists():
+            st.download_button('⬇ 허가원문.csv 다운로드', permit_path.read_bytes(),
+                               file_name='허가원문.csv', mime='text/csv')
+            st.dataframe(_read_csv_safe(permit_path), use_container_width=True, height=320)
+        else:
+            st.warning('허가원문.csv 가 생성되지 않았습니다')
+    with col2:
+        st.subheader('💰 약가원문')
+        if price_path.exists():
+            st.download_button('⬇ 약가원문.csv 다운로드', price_path.read_bytes(),
+                               file_name='약가원문.csv', mime='text/csv')
+            st.dataframe(_read_csv_safe(price_path), use_container_width=True, height=320)
+        else:
+            st.warning('약가원문.csv 가 생성되지 않았습니다')
+
+    st.success(f'✅ 완료 — 기준일 {ref_date} · 데모={demo_only} · 키={"있음" if key else "없음(데모)"}')
+
+
+def _read_csv_safe(p: pathlib.Path):
+    import io
+    try:
+        return list(csv.DictReader(io.StringIO(p.read_text(encoding='utf-8-sig'))))
+    except Exception as e:
+        return [{'오류': str(e)}]
+
+
 def main():
+    # Streamlit 모드 감지: streamlit run 으로 실행되면 __name__ == 'streamlit.runtime.scriptrunner.script_runner'
+    if _HAS_ST and ('streamlit' in sys.argv[0] or os.getenv('STREAMLIT_SERVER_RUNNING')):
+        streamlit_app(); return
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--products', help='쉼표 구분 제품명 목록', default='')
     ap.add_argument('--demo', action='store_true', help='외부 호출 없이 mock 데이터로 CSV emit')
     ap.add_argument('--ref', help='약가 기준일(YYYY-MM-DD, 기본 오늘)', default=time.strftime('%Y-%m-%d'))
     args = ap.parse_args()
-    key = os.getenv('DATA_GO_KR_KEY') or os.getenv('MFDS_SERVICE_KEY')
+    key = _resolve_key()
     products = [s.strip() for s in args.products.split(',') if s.strip()]
+
+    # 키 없고 --demo 도 없으면: 인터랙티브 입력 폴백 (CLI 모드에서도 친절하게)
     if not args.demo and not key:
-        WARN('키가 없습니다 (DATA_GO_KR_KEY). --demo로 실행하세요.')
-        sys.exit(2)
-    if not products:
-        WARN('--products 또는 --demo 필요'); sys.exit(2)
+        print('[app.py] 키 또는 시크릿이 없습니다. 아래에서 입력하세요 (Ctrl+C로 종료).', file=sys.stderr)
+        try:
+            import getpass
+            key = getpass.getpass('data.go.kr 인증키: ').strip()
+            if not key:
+                WARN('키 입력이 비어있습니다. --demo 로 재시도하거나 키를 다시 입력하세요.')
+                sys.exit(2)
+        except (KeyboardInterrupt, EOFError):
+            WARN('키 입력 취소 — --demo 로 재시도하세요.'); sys.exit(2)
+
+    if not products and not args.demo:
+        # CLI 모드 폴백: 제품도 인터랙티브 입력
+        try:
+            raw = input('제품명 (쉼표 구분, 엔터=리리카 75mg 데모): ').strip()
+            products = [s.strip() for s in raw.split(',') if s.strip()] or ['리리카 캡슐 75mg']
+        except (KeyboardInterrupt, EOFError):
+            WARN('제품명 입력 취소.'); sys.exit(2)
+
+    if not products and args.demo:
+        products = ['리리카 캡슐 75mg']  # 데모 기본 1건
+
     run(products, key, args.ref, args.demo)
 
 if __name__ == '__main__':
